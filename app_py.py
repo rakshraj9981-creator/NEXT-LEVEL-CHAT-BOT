@@ -8,27 +8,28 @@ Original file is located at
 """
 
 import streamlit as st
-import google.generativeai as genai
 import numpy as np
 import faiss
+from groq import Groq
+from sentence_transformers import SentenceTransformer
 from PyPDF2 import PdfReader
+from PIL import Image
+import io
 
 # ---------------------------
-# CONFIGURE GEMINI
+# CONFIG
 # ---------------------------
 
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+model_name = "openai/gpt-oss-120b"
 
-CHAT_MODEL = "gemini-1.5-flash-latest"
-EMBED_MODEL = "embedding-001"
-
-model = genai.GenerativeModel(CHAT_MODEL)
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 
 # ---------------------------
-# TEXT CHUNKING
+# CHUNKING
 # ---------------------------
 def chunk_text(text):
     chunks = []
@@ -38,23 +39,12 @@ def chunk_text(text):
 
 
 # ---------------------------
-# GEMINI EMBEDDING
-# ---------------------------
-def get_embedding(text):
-    response = genai.embed_content(
-        model=EMBED_MODEL,
-        content=text
-    )
-    return response["embedding"]
-
-
-# ---------------------------
 # CREATE VECTOR STORE
 # ---------------------------
 def create_vectorstore(text):
     chunks = chunk_text(text)
+    embeddings = embedding_model.encode(chunks)
 
-    embeddings = [get_embedding(chunk) for chunk in chunks]
     embeddings = np.array(embeddings).astype("float32")
 
     dimension = embeddings.shape[1]
@@ -65,58 +55,19 @@ def create_vectorstore(text):
 
 
 # ---------------------------
-# RETRIEVE CONTEXT
+# RETRIEVE
 # ---------------------------
 def retrieve(query, index, chunks, top_k=3):
-    query_embedding = np.array([get_embedding(query)]).astype("float32")
+    query_embedding = embedding_model.encode([query]).astype("float32")
     distances, indices = index.search(query_embedding, top_k)
     return [chunks[i] for i in indices[0]]
 
 
 # ---------------------------
-# STREAMLIT UI
+# GROQ GENERATION
 # ---------------------------
-
-st.title("🔮 Gemini Multimodal RAG Chat")
-
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-uploaded_file = st.file_uploader("Upload PDF or Image", type=["pdf", "png", "jpg", "jpeg"])
-query = st.chat_input("Ask your question")
-
-text_data = ""
-
-# ---------------------------
-# FILE PROCESSING
-# ---------------------------
-
-if uploaded_file:
-
-    if uploaded_file.type == "application/pdf":
-        reader = PdfReader(uploaded_file)
-        for page in reader.pages:
-            text_data += page.extract_text()
-
-    else:
-        image_bytes = uploaded_file.read()
-        response = model.generate_content([
-            "Extract all readable text from this image.",
-            {"mime_type": uploaded_file.type, "data": image_bytes}
-        ])
-        text_data = response.text
-
-    st.success("File processed successfully.")
-
-
-# ---------------------------
-# MAIN CHAT LOGIC
-# ---------------------------
-
-if query and text_data:
-
-    index, chunks = create_vectorstore(text_data)
-    context = retrieve(query, index, chunks)
+def generate_answer(query, context_chunks):
+    context = "\n\n".join(context_chunks)
 
     prompt = f"""
     Answer strictly using the context below.
@@ -128,19 +79,49 @@ if query and text_data:
     {query}
 
     If answer not found, say:
-    Answer not found in the document.
+    Answer not found in document.
     """
 
-    response = model.generate_content(prompt)
+    completion = client.chat.completions.create(
+        model=model_name,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+        max_completion_tokens=1024,
+        stream=False,
+    )
+
+    return completion.choices[0].message.content
+
+
+# ---------------------------
+# STREAMLIT UI
+# ---------------------------
+
+st.title("🚀 Free Groq RAG Chat")
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
+query = st.chat_input("Ask your question")
+
+text_data = ""
+
+if uploaded_file:
+    reader = PdfReader(uploaded_file)
+    for page in reader.pages:
+        text_data += page.extract_text()
+
+    st.success("PDF Processed.")
+
+if query and text_data:
+    index, chunks = create_vectorstore(text_data)
+    context = retrieve(query, index, chunks)
+    answer = generate_answer(query, context)
 
     st.session_state.chat_history.append(("user", query))
-    st.session_state.chat_history.append(("assistant", response.text))
-
-
-# ---------------------------
-# DISPLAY CHAT
-# ---------------------------
+    st.session_state.chat_history.append(("assistant", answer))
 
 for role, message in st.session_state.chat_history:
     with st.chat_message(role):
-        st.write(message)
+        st.write(message))
