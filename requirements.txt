@@ -1,7 +1,11 @@
 streamlit
+fastreamlit
 faiss-cpu
 numpy
 sentence-transformers
 groq
 PyPDF2
 Pillow
+pytesseract
+speechrecognition
+pydub
