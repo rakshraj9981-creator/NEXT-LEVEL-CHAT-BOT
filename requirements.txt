@@ -1,0 +1,9 @@
+streamlit
+faiss-cpu
+numpy
+openai
+PyPDF2
+pillow
+pytesseract
+speechrecognition
+pydub
