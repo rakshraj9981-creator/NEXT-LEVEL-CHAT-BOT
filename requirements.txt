@@ -6,5 +6,3 @@ groq
 PyPDF2
 Pillow
 pytesseract
-speechrecognition
-pydub
