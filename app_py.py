@@ -8,213 +8,52 @@ Original file is located at
 """
 
 import streamlit as st
-import numpy as np
-import faiss
-from groq import Groq
-from sentence_transformers import SentenceTransformer
-from PyPDF2 import PdfReader
+import requests
 from PIL import Image
-import pytesseract
+import io
 
 # ---------------- CONFIG ---------------- #
 
-client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-MODEL_NAME = "llama-3.1-8b-instant"
+HF_API_KEY = st.secrets["HF_API_KEY"]
 
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+MODEL_URL = "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-large"
 
-CHUNK_SIZE = 800
-CHUNK_OVERLAP = 100
+headers = {
+    "Authorization": f"Bearer {HF_API_KEY}"
+}
 
+# ---------------- HUGGING FACE CALL ---------------- #
 
-# ---------------- TEXT CHUNKING ---------------- #
-
-def chunk_text(text):
-    chunks = []
-    for i in range(0, len(text), CHUNK_SIZE - CHUNK_OVERLAP):
-        chunk = text[i:i + CHUNK_SIZE]
-        if chunk.strip():
-            chunks.append(chunk)
-    return chunks
-
-
-# ---------------- VECTOR STORE ---------------- #
-
-def create_vectorstore(text):
-    if not text or not text.strip():
-        return None, None
-
-    chunks = chunk_text(text)
-    if not chunks:
-        return None, None
-
-    embeddings = embedding_model.encode(chunks)
-    embeddings = np.array(embeddings).astype("float32")
-
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(embeddings)
-
-    return index, chunks
-
-
-# ---------------- RETRIEVE ---------------- #
-
-def retrieve(query, index, chunks, top_k=3):
-    if index is None:
-        return []
-
-    query_embedding = embedding_model.encode([query]).astype("float32")
-    distances, indices = index.search(query_embedding, top_k)
-
-    results = []
-    for i in indices[0]:
-        if i < len(chunks):
-            results.append(chunks[i])
-
-    return results
-
-
-# ---------------- GROQ GENERATION ---------------- #
-
-def generate_answer(query, context_chunks):
-
-    if not context_chunks:
-        return "No relevant content found in selected source."
-
-    context = "\n\n".join(context_chunks)
-
-    prompt = f"""
-You are a document assistant.
-
-Answer ONLY using the context below.
-
-Context:
-{context}
-
-Question:
-{query}
-
-If answer not found in context, say:
-Answer not found in selected source.
-"""
-
-    completion = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.3,
-        max_completion_tokens=512
+def query_image(image_bytes):
+    response = requests.post(
+        MODEL_URL,
+        headers=headers,
+        data=image_bytes
     )
-
-    return completion.choices[0].message.content
-
+    return response.json()
 
 # ---------------- STREAMLIT UI ---------------- #
 
-st.title("🚀 Groq Multimodal RAG Assistant")
-
-# Session storage
-if "doc_index" not in st.session_state:
-    st.session_state.doc_index = None
-    st.session_state.doc_chunks = None
-
-if "img_index" not in st.session_state:
-    st.session_state.img_index = None
-    st.session_state.img_chunks = None
-
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-
-# ---------------- FILE UPLOAD ---------------- #
+st.title("🖼 Hugging Face Vision Assistant")
 
 uploaded_file = st.file_uploader(
-    "Upload PDF or Image",
-    type=["pdf", "png", "jpg", "jpeg"]
+    "Upload an Image",
+    type=["png", "jpg", "jpeg"]
 )
 
 if uploaded_file:
+    image = Image.open(uploaded_file)
+    st.image(image, caption="Uploaded Image", use_column_width=True)
 
-    # -------- PDF -------- #
-    if uploaded_file.type == "application/pdf":
-        text = ""
-        reader = PdfReader(uploaded_file)
+    with st.spinner("Analyzing image..."):
 
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text
+        image_bytes = uploaded_file.read()
+        result = query_image(image_bytes)
 
-        index, chunks = create_vectorstore(text)
-
-        if index is None:
-            st.error("No readable text found in document.")
+        if isinstance(result, list) and "generated_text" in result[0]:
+            caption = result[0]["generated_text"]
+            st.success("Image Description:")
+            st.write(caption)
         else:
-            st.session_state.doc_index = index
-            st.session_state.doc_chunks = chunks
-            st.success("Document indexed successfully.")
-
-    # -------- IMAGE -------- #
-    else:
-        image = Image.open(uploaded_file)
-        text = pytesseract.image_to_string(image)
-
-        if not text.strip():
-            st.error("No readable text found in image.")
-        else:
-            index, chunks = create_vectorstore(text)
-
-            if index is None:
-                st.error("Image indexing failed.")
-            else:
-                st.session_state.img_index = index
-                st.session_state.img_chunks = chunks
-                st.success("Image indexed successfully.")
-
-
-# ---------------- SOURCE SELECTOR ---------------- #
-
-source = st.radio("Answer From:", ["Document", "Image"])
-
-query = st.chat_input("Ask your question")
-
-
-# ---------------- MAIN RAG LOGIC ---------------- #
-
-if query:
-
-    if source == "Document":
-        if st.session_state.doc_index is None:
-            st.error("Please upload and index a document first.")
-            st.stop()
-
-        context = retrieve(
-            query,
-            st.session_state.doc_index,
-            st.session_state.doc_chunks
-        )
-
-    else:
-        if st.session_state.img_index is None:
-            st.error("Please upload and index an image first.")
-            st.stop()
-
-        context = retrieve(
-            query,
-            st.session_state.img_index,
-            st.session_state.img_chunks
-        )
-
-    answer = generate_answer(query, context)
-
-    st.session_state.chat_history.append(("user", query))
-    st.session_state.chat_history.append(("assistant", answer))
-
-
-# ---------------- DISPLAY CHAT ---------------- #
-
-for role, message in st.session_state.chat_history:
-    with st.chat_message(role):
-        st.write(message)
+            st.error("Model loading or API error. Try again.")
+            st.write(result)
