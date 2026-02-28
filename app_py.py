@@ -9,69 +9,94 @@ Original file is located at
 import streamlit as st
 import requests
 from PIL import Image
+from PyPDF2 import PdfReader
 
 # ---------------- CONFIG ---------------- #
 
 HF_API_KEY = st.secrets["HF_API_KEY"]
 
-MODEL_URL = "https://api-inference.huggingface.co/models/llava-hf/llava-1.5-7b-hf"
+# Stable working caption model
+IMAGE_MODEL_URL = "https://api-inference.huggingface.co/models/nlpconnect/vit-gpt2-image-captioning"
 
 headers = {
     "Authorization": f"Bearer {HF_API_KEY}"
 }
 
-# ---------------- SAFE API CALL ---------------- #
+# ---------------- IMAGE CAPTION FUNCTION ---------------- #
 
-def query_llava(image_bytes, question):
-    payload = {
-        "inputs": {
-            "image": image_bytes,
-            "text": question
-        }
-    }
-
+def describe_image(image_bytes):
     response = requests.post(
-        MODEL_URL,
+        IMAGE_MODEL_URL,
         headers=headers,
-        json=payload
+        data=image_bytes
     )
 
     if response.status_code == 503:
-        return {"error": "Model is loading. Please wait 30–60 seconds and try again."}
+        return "Model is loading. Wait 30–60 seconds and try again."
 
     if response.status_code != 200:
-        return {"error": f"API Error: {response.status_code}", "details": response.text}
+        return f"API Error: {response.status_code}"
 
     try:
-        return response.json()
+        result = response.json()
+        if isinstance(result, list) and "generated_text" in result[0]:
+            return result[0]["generated_text"]
+        return str(result)
     except:
-        return {"error": "Invalid response", "details": response.text}
+        return "Invalid API response"
 
 
-# ---------------- UI ---------------- #
+# ---------------- STREAMLIT UI ---------------- #
 
-st.title("🖼 Vision Assistant (LLaVA)")
+st.title("🖼 Image + 📄 PDF Assistant")
 
 uploaded_file = st.file_uploader(
-    "Upload an Image",
-    type=["png", "jpg", "jpeg"]
+    "Upload Image or PDF",
+    type=["png", "jpg", "jpeg", "pdf"]
 )
 
-question = st.text_input("Ask something about the image")
+pdf_text = ""
 
 if uploaded_file:
-    image = Image.open(uploaded_file)
-    st.image(image, use_column_width=True)
 
-    if question:
+    # -------- IMAGE -------- #
+    if uploaded_file.type in ["image/png", "image/jpeg"]:
+
+        image = Image.open(uploaded_file)
+        st.image(image, use_column_width=True)
+
         with st.spinner("Analyzing image..."):
             image_bytes = uploaded_file.read()
-            result = query_llava(image_bytes, question)
+            description = describe_image(image_bytes)
 
-            if "error" in result:
-                st.error(result["error"])
-                if "details" in result:
-                    st.write(result["details"])
-            else:
-                st.success("Answer:")
-                st.write(result)
+        st.success("Image Description:")
+        st.write(description)
+
+    # -------- PDF -------- #
+    elif uploaded_file.type == "application/pdf":
+
+        reader = PdfReader(uploaded_file)
+        text = ""
+
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text
+
+        if text.strip():
+            pdf_text = text
+            st.success("PDF Text Extracted Successfully")
+            st.write(text[:1000])  # preview first 1000 characters
+        else:
+            st.error("No readable text found in PDF.")
+
+# -------- PDF Q&A -------- #
+
+if pdf_text:
+    question = st.text_input("Ask something about the PDF")
+
+    if question:
+        if question.lower() in pdf_text.lower():
+            st.success("Answer found in PDF text.")
+        else:
+            st.warning("Exact answer not found. Try rephrasing.")
