@@ -20,7 +20,6 @@ import pytesseract
 
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
-# Use stable Groq model
 MODEL_NAME = "llama3-8b-8192"
 
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -62,7 +61,7 @@ def create_vectorstore(text):
     return index, chunks
 
 
-# ---------------- RETRIEVAL ---------------- #
+# ---------------- RETRIEVE ---------------- #
 
 def retrieve(query, index, chunks, top_k=3):
 
@@ -91,25 +90,27 @@ def generate_answer(query, context_chunks):
     context = "\n\n".join(context_chunks)
 
     prompt = f"""
-    You are a document assistant.
+You are a document assistant.
 
-    Answer ONLY using the context below.
+Answer ONLY using the context below.
 
-    Context:
-    {context}
+Context:
+{context}
 
-    Question:
-    {query}
+Question:
+{query}
 
-    If answer not found in context, say:
-    Answer not found in selected source.
-    """
+If answer not found in context, say:
+Answer not found in selected source.
+"""
 
     completion = client.chat.completions.create(
         model=MODEL_NAME,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
         temperature=0.3,
-        max_tokens=1024,
+        max_completion_tokens=512  # ✅ correct parameter for Groq
     )
 
     return completion.choices[0].message.content
@@ -140,7 +141,7 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file:
 
-    # ----- PDF ----- #
+    # PDF
     if uploaded_file.type == "application/pdf":
         text = ""
         reader = PdfReader(uploaded_file)
@@ -159,7 +160,7 @@ if uploaded_file:
             st.session_state.doc_chunks = chunks
             st.success("Document indexed successfully.")
 
-    # ----- IMAGE ----- #
+    # IMAGE
     else:
         image = Image.open(uploaded_file)
         text = pytesseract.image_to_string(image)
@@ -220,4 +221,4 @@ if query:
 
 for role, message in st.session_state.chat_history:
     with st.chat_message(role):
-        st.write(message)
+        st.write(message))
