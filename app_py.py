@@ -124,4 +124,4 @@ if query and text_data:
 
 for role, message in st.session_state.chat_history:
     with st.chat_message(role):
-        st.write(message))
+        st.write(message)
