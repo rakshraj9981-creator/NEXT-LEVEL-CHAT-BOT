@@ -19,7 +19,6 @@ import pytesseract
 # ---------------- CONFIG ---------------- #
 
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-
 MODEL_NAME = "llama3-8b-8192"
 
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -42,13 +41,12 @@ def chunk_text(text):
 # ---------------- VECTOR STORE ---------------- #
 
 def create_vectorstore(text):
-
-    if not text or text.strip() == "":
+    if not text or not text.strip():
         return None, None
 
     chunks = chunk_text(text)
 
-    if len(chunks) == 0:
+    if not chunks:
         return None, None
 
     embeddings = embedding_model.encode(chunks)
@@ -64,12 +62,10 @@ def create_vectorstore(text):
 # ---------------- RETRIEVE ---------------- #
 
 def retrieve(query, index, chunks, top_k=3):
-
     if index is None:
         return []
 
     query_embedding = embedding_model.encode([query]).astype("float32")
-
     distances, indices = index.search(query_embedding, top_k)
 
     results = []
@@ -110,7 +106,7 @@ Answer not found in selected source.
             {"role": "user", "content": prompt}
         ],
         temperature=0.3,
-        max_completion_tokens=512  # ✅ correct parameter for Groq
+        max_completion_tokens=512
     )
 
     return completion.choices[0].message.content
@@ -120,6 +116,7 @@ Answer not found in selected source.
 
 st.title("🚀 Groq Multimodal RAG Assistant")
 
+# Session storage
 if "doc_index" not in st.session_state:
     st.session_state.doc_index = None
     st.session_state.doc_chunks = None
@@ -141,7 +138,7 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file:
 
-    # PDF
+    # -------- PDF -------- #
     if uploaded_file.type == "application/pdf":
         text = ""
         reader = PdfReader(uploaded_file)
@@ -160,7 +157,7 @@ if uploaded_file:
             st.session_state.doc_chunks = chunks
             st.success("Document indexed successfully.")
 
-    # IMAGE
+    # -------- IMAGE -------- #
     else:
         image = Image.open(uploaded_file)
         text = pytesseract.image_to_string(image)
@@ -185,7 +182,7 @@ source = st.radio("Answer From:", ["Document", "Image"])
 query = st.chat_input("Ask your question")
 
 
-# ---------------- MAIN LOGIC ---------------- #
+# ---------------- MAIN RAG LOGIC ---------------- #
 
 if query:
 
@@ -221,4 +218,4 @@ if query:
 
 for role, message in st.session_state.chat_history:
     with st.chat_message(role):
-        st.write(message))
+        st.write(message)
