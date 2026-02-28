@@ -1,9 +1,5 @@
 streamlit
+google-generativeai
 faiss-cpu
 numpy
-openai
 PyPDF2
-pillow
-pytesseract
-speechrecognition
-pydub
