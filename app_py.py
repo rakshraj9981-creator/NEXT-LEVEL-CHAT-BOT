@@ -16,12 +16,12 @@ from PyPDF2 import PdfReader
 from PIL import Image
 import pytesseract
 
-# ---------------------------
-# CONFIG
-# ---------------------------
+# ---------------- CONFIG ---------------- #
 
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-model_name = "openai/gpt-oss-120b"
+
+# Use stable Groq model
+MODEL_NAME = "llama3-8b-8192"
 
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -29,18 +29,29 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 
 
-# ---------------------------
-# CHUNKING
-# ---------------------------
+# ---------------- TEXT CHUNKING ---------------- #
+
 def chunk_text(text):
     chunks = []
     for i in range(0, len(text), CHUNK_SIZE - CHUNK_OVERLAP):
-        chunks.append(text[i:i + CHUNK_SIZE])
+        chunk = text[i:i + CHUNK_SIZE]
+        if chunk.strip():
+            chunks.append(chunk)
     return chunks
 
 
+# ---------------- VECTOR STORE ---------------- #
+
 def create_vectorstore(text):
+
+    if not text or text.strip() == "":
+        return None, None
+
     chunks = chunk_text(text)
+
+    if len(chunks) == 0:
+        return None, None
+
     embeddings = embedding_model.encode(chunks)
     embeddings = np.array(embeddings).astype("float32")
 
@@ -51,17 +62,38 @@ def create_vectorstore(text):
     return index, chunks
 
 
-def retrieve(query, index, chunks, top_k=3):
-    query_embedding = embedding_model.encode([query]).astype("float32")
-    distances, indices = index.search(query_embedding, top_k)
-    return [chunks[i] for i in indices[0]]
+# ---------------- RETRIEVAL ---------------- #
 
+def retrieve(query, index, chunks, top_k=3):
+
+    if index is None:
+        return []
+
+    query_embedding = embedding_model.encode([query]).astype("float32")
+
+    distances, indices = index.search(query_embedding, top_k)
+
+    results = []
+    for i in indices[0]:
+        if i < len(chunks):
+            results.append(chunks[i])
+
+    return results
+
+
+# ---------------- GROQ GENERATION ---------------- #
 
 def generate_answer(query, context_chunks):
+
+    if not context_chunks:
+        return "No relevant content found in selected source."
+
     context = "\n\n".join(context_chunks)
 
     prompt = f"""
-    Answer strictly using the context below.
+    You are a document assistant.
+
+    Answer ONLY using the context below.
 
     Context:
     {context}
@@ -69,28 +101,23 @@ def generate_answer(query, context_chunks):
     Question:
     {query}
 
-    If answer not found, say:
-    Answer not found in the selected source.
+    If answer not found in context, say:
+    Answer not found in selected source.
     """
 
     completion = client.chat.completions.create(
-        model=model_name,
+        model=MODEL_NAME,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
-        max_completion_tokens=1024,
+        max_tokens=1024,
     )
 
     return completion.choices[0].message.content
 
 
-# ---------------------------
-# STREAMLIT UI
-# ---------------------------
+# ---------------- STREAMLIT UI ---------------- #
 
-st.title("🚀 Multimodal Groq RAG")
-
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+st.title("🚀 Groq Multimodal RAG Assistant")
 
 if "doc_index" not in st.session_state:
     st.session_state.doc_index = None
@@ -100,8 +127,12 @@ if "img_index" not in st.session_state:
     st.session_state.img_index = None
     st.session_state.img_chunks = None
 
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-# -------- FILE UPLOAD --------
+
+# ---------------- FILE UPLOAD ---------------- #
+
 uploaded_file = st.file_uploader(
     "Upload PDF or Image",
     type=["pdf", "png", "jpg", "jpeg"]
@@ -109,43 +140,58 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file:
 
+    # ----- PDF ----- #
     if uploaded_file.type == "application/pdf":
-        text_data = ""
+        text = ""
         reader = PdfReader(uploaded_file)
+
         for page in reader.pages:
-            text_data += page.extract_text()
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text
 
-        index, chunks = create_vectorstore(text_data)
-        st.session_state.doc_index = index
-        st.session_state.doc_chunks = chunks
+        index, chunks = create_vectorstore(text)
 
-        st.success("Document indexed successfully.")
+        if index is None:
+            st.error("No readable text found in document.")
+        else:
+            st.session_state.doc_index = index
+            st.session_state.doc_chunks = chunks
+            st.success("Document indexed successfully.")
 
+    # ----- IMAGE ----- #
     else:
         image = Image.open(uploaded_file)
-        text_data = pytesseract.image_to_string(image)
+        text = pytesseract.image_to_string(image)
 
-        index, chunks = create_vectorstore(text_data)
-        st.session_state.img_index = index
-        st.session_state.img_chunks = chunks
+        if not text.strip():
+            st.error("No readable text found in image.")
+        else:
+            index, chunks = create_vectorstore(text)
 
-        st.success("Image indexed successfully.")
+            if index is None:
+                st.error("Image indexing failed.")
+            else:
+                st.session_state.img_index = index
+                st.session_state.img_chunks = chunks
+                st.success("Image indexed successfully.")
 
 
-# -------- SOURCE SELECTOR --------
-source = st.radio(
-    "Answer From:",
-    ["Document", "Image"]
-)
+# ---------------- SOURCE SELECTOR ---------------- #
 
+source = st.radio("Answer From:", ["Document", "Image"])
 
 query = st.chat_input("Ask your question")
 
 
-# -------- MAIN LOGIC --------
+# ---------------- MAIN LOGIC ---------------- #
+
 if query:
 
-    if source == "Document" and st.session_state.doc_index:
+    if source == "Document":
+        if st.session_state.doc_index is None:
+            st.error("Please upload and index a document first.")
+            st.stop()
 
         context = retrieve(
             query,
@@ -153,7 +199,10 @@ if query:
             st.session_state.doc_chunks
         )
 
-    elif source == "Image" and st.session_state.img_index:
+    else:
+        if st.session_state.img_index is None:
+            st.error("Please upload and index an image first.")
+            st.stop()
 
         context = retrieve(
             query,
@@ -161,17 +210,14 @@ if query:
             st.session_state.img_chunks
         )
 
-    else:
-        st.error("Please upload the selected source first.")
-        st.stop()
-
     answer = generate_answer(query, context)
 
     st.session_state.chat_history.append(("user", query))
     st.session_state.chat_history.append(("assistant", answer))
 
 
-# -------- DISPLAY CHAT --------
+# ---------------- DISPLAY CHAT ---------------- #
+
 for role, message in st.session_state.chat_history:
     with st.chat_message(role):
         st.write(message)
