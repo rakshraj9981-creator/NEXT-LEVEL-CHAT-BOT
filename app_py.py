@@ -15,9 +15,6 @@ from sentence_transformers import SentenceTransformer
 from PyPDF2 import PdfReader
 from PIL import Image
 import pytesseract
-import speech_recognition as sr
-import tempfile
-import os
 
 # ---------------------------
 # CONFIG
@@ -42,9 +39,6 @@ def chunk_text(text):
     return chunks
 
 
-# ---------------------------
-# CREATE VECTOR STORE
-# ---------------------------
 def create_vectorstore(text):
     chunks = chunk_text(text)
     embeddings = embedding_model.encode(chunks)
@@ -57,18 +51,12 @@ def create_vectorstore(text):
     return index, chunks
 
 
-# ---------------------------
-# RETRIEVE
-# ---------------------------
 def retrieve(query, index, chunks, top_k=3):
     query_embedding = embedding_model.encode([query]).astype("float32")
     distances, indices = index.search(query_embedding, top_k)
     return [chunks[i] for i in indices[0]]
 
 
-# ---------------------------
-# GROQ GENERATION
-# ---------------------------
 def generate_answer(query, context_chunks):
     context = "\n\n".join(context_chunks)
 
@@ -82,7 +70,7 @@ def generate_answer(query, context_chunks):
     {query}
 
     If answer not found, say:
-    Answer not found in document.
+    Answer not found in the selected source.
     """
 
     completion = client.chat.completions.create(
@@ -99,12 +87,19 @@ def generate_answer(query, context_chunks):
 # STREAMLIT UI
 # ---------------------------
 
-st.title("🚀 Multimodal Groq RAG Assistant")
+st.title("🚀 Multimodal Groq RAG")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-text_data = ""
+if "doc_index" not in st.session_state:
+    st.session_state.doc_index = None
+    st.session_state.doc_chunks = None
+
+if "img_index" not in st.session_state:
+    st.session_state.img_index = None
+    st.session_state.img_chunks = None
+
 
 # -------- FILE UPLOAD --------
 uploaded_file = st.file_uploader(
@@ -114,55 +109,62 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file:
 
-    # PDF
     if uploaded_file.type == "application/pdf":
+        text_data = ""
         reader = PdfReader(uploaded_file)
         for page in reader.pages:
             text_data += page.extract_text()
 
-    # Image (OCR)
+        index, chunks = create_vectorstore(text_data)
+        st.session_state.doc_index = index
+        st.session_state.doc_chunks = chunks
+
+        st.success("Document indexed successfully.")
+
     else:
         image = Image.open(uploaded_file)
         text_data = pytesseract.image_to_string(image)
 
-    st.success("File processed successfully.")
+        index, chunks = create_vectorstore(text_data)
+        st.session_state.img_index = index
+        st.session_state.img_chunks = chunks
+
+        st.success("Image indexed successfully.")
 
 
-# -------- VOICE INPUT --------
-st.write("### 🎤 Voice Input")
-audio_file = st.file_uploader("Upload audio (wav format)", type=["wav"])
-
-voice_text = ""
-if audio_file:
-    recognizer = sr.Recognizer()
-
-    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-        tmp_file.write(audio_file.read())
-        tmp_path = tmp_file.name
-
-    with sr.AudioFile(tmp_path) as source:
-        audio = recognizer.record(source)
-        try:
-            voice_text = recognizer.recognize_google(audio)
-            st.write("You said:", voice_text)
-        except:
-            st.error("Could not recognize audio.")
-
-    os.remove(tmp_path)
+# -------- SOURCE SELECTOR --------
+source = st.radio(
+    "Answer From:",
+    ["Document", "Image"]
+)
 
 
-# -------- TEXT INPUT --------
-text_query = st.chat_input("Ask your question")
-
-# Decide which query to use
-query = voice_text if voice_text else text_query
+query = st.chat_input("Ask your question")
 
 
-# -------- MAIN RAG LOGIC --------
-if query and text_data:
+# -------- MAIN LOGIC --------
+if query:
 
-    index, chunks = create_vectorstore(text_data)
-    context = retrieve(query, index, chunks)
+    if source == "Document" and st.session_state.doc_index:
+
+        context = retrieve(
+            query,
+            st.session_state.doc_index,
+            st.session_state.doc_chunks
+        )
+
+    elif source == "Image" and st.session_state.img_index:
+
+        context = retrieve(
+            query,
+            st.session_state.img_index,
+            st.session_state.img_chunks
+        )
+
+    else:
+        st.error("Please upload the selected source first.")
+        st.stop()
+
     answer = generate_answer(query, context)
 
     st.session_state.chat_history.append(("user", query))
