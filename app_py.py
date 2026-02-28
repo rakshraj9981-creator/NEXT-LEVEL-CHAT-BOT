@@ -14,7 +14,10 @@ from groq import Groq
 from sentence_transformers import SentenceTransformer
 from PyPDF2 import PdfReader
 from PIL import Image
-import io
+import pytesseract
+import speech_recognition as sr
+import tempfile
+import os
 
 # ---------------------------
 # CONFIG
@@ -27,6 +30,7 @@ embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
+
 
 # ---------------------------
 # CHUNKING
@@ -44,7 +48,6 @@ def chunk_text(text):
 def create_vectorstore(text):
     chunks = chunk_text(text)
     embeddings = embedding_model.encode(chunks)
-
     embeddings = np.array(embeddings).astype("float32")
 
     dimension = embeddings.shape[1]
@@ -87,7 +90,6 @@ def generate_answer(query, context_chunks):
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
         max_completion_tokens=1024,
-        stream=False,
     )
 
     return completion.choices[0].message.content
@@ -97,24 +99,68 @@ def generate_answer(query, context_chunks):
 # STREAMLIT UI
 # ---------------------------
 
-st.title("🚀 Free Groq RAG Chat")
+st.title("🚀 Multimodal Groq RAG Assistant")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
-query = st.chat_input("Ask your question")
-
 text_data = ""
 
+# -------- FILE UPLOAD --------
+uploaded_file = st.file_uploader(
+    "Upload PDF or Image",
+    type=["pdf", "png", "jpg", "jpeg"]
+)
+
 if uploaded_file:
-    reader = PdfReader(uploaded_file)
-    for page in reader.pages:
-        text_data += page.extract_text()
 
-    st.success("PDF Processed.")
+    # PDF
+    if uploaded_file.type == "application/pdf":
+        reader = PdfReader(uploaded_file)
+        for page in reader.pages:
+            text_data += page.extract_text()
 
+    # Image (OCR)
+    else:
+        image = Image.open(uploaded_file)
+        text_data = pytesseract.image_to_string(image)
+
+    st.success("File processed successfully.")
+
+
+# -------- VOICE INPUT --------
+st.write("### 🎤 Voice Input")
+audio_file = st.file_uploader("Upload audio (wav format)", type=["wav"])
+
+voice_text = ""
+if audio_file:
+    recognizer = sr.Recognizer()
+
+    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+        tmp_file.write(audio_file.read())
+        tmp_path = tmp_file.name
+
+    with sr.AudioFile(tmp_path) as source:
+        audio = recognizer.record(source)
+        try:
+            voice_text = recognizer.recognize_google(audio)
+            st.write("You said:", voice_text)
+        except:
+            st.error("Could not recognize audio.")
+
+    os.remove(tmp_path)
+
+
+# -------- TEXT INPUT --------
+text_query = st.chat_input("Ask your question")
+
+# Decide which query to use
+query = voice_text if voice_text else text_query
+
+
+# -------- MAIN RAG LOGIC --------
 if query and text_data:
+
     index, chunks = create_vectorstore(text_data)
     context = retrieve(query, index, chunks)
     answer = generate_answer(query, context)
@@ -122,6 +168,8 @@ if query and text_data:
     st.session_state.chat_history.append(("user", query))
     st.session_state.chat_history.append(("assistant", answer))
 
+
+# -------- DISPLAY CHAT --------
 for role, message in st.session_state.chat_history:
     with st.chat_message(role):
         st.write(message)
