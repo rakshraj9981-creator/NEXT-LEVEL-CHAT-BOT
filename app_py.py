@@ -8,22 +8,26 @@ Original file is located at
 """
 
 import streamlit as st
-import os
-import faiss
-import pickle
+import google.generativeai as genai
 import numpy as np
+import faiss
+import os
 from PyPDF2 import PdfReader
-from PIL import Image
-import pytesseract
-import speech_recognition as sr
-import openai
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# ---------------------------
+# CONFIGURE GEMINI
+# ---------------------------
+
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 
-# -------- TEXT CHUNKING --------
+
+# ---------------------------
+# CHUNKING
+# ---------------------------
 def chunk_text(text):
     chunks = []
     for i in range(0, len(text), CHUNK_SIZE - CHUNK_OVERLAP):
@@ -31,18 +35,22 @@ def chunk_text(text):
     return chunks
 
 
-# -------- EMBEDDING --------
+# ---------------------------
+# EMBEDDING USING GEMINI
+# ---------------------------
 def get_embedding(text):
-    response = openai.Embedding.create(
-        model="text-embedding-3-small",
-        input=text
+    response = genai.embed_content(
+        model="models/embedding-001",
+        content=text
     )
-    return response["data"][0]["embedding"]
+    return response["embedding"]
 
 
-# -------- VECTOR STORE --------
-def create_vectorstore(text_data):
-    chunks = chunk_text(text_data)
+# ---------------------------
+# CREATE VECTOR STORE
+# ---------------------------
+def create_vectorstore(text):
+    chunks = chunk_text(text)
 
     embeddings = []
     for chunk in chunks:
@@ -57,19 +65,63 @@ def create_vectorstore(text_data):
     return index, chunks
 
 
-# -------- RETRIEVAL --------
+# ---------------------------
+# RETRIEVE
+# ---------------------------
 def retrieve(query, index, chunks, top_k=3):
     query_embedding = np.array([get_embedding(query)]).astype("float32")
     distances, indices = index.search(query_embedding, top_k)
     return [chunks[i] for i in indices[0]]
 
 
-# -------- LLM --------
-def generate_answer(query, context_chunks):
-    context = "\n\n".join(context_chunks)
+# ---------------------------
+# STREAMLIT UI
+# ---------------------------
+
+st.title("🔮 Gemini Multimodal RAG Chat")
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+uploaded_file = st.file_uploader("Upload PDF or Image", type=["pdf", "png", "jpg", "jpeg"])
+query = st.chat_input("Ask your question")
+
+text_data = ""
+
+# ---------------------------
+# FILE PROCESSING
+# ---------------------------
+
+if uploaded_file:
+
+    if uploaded_file.type == "application/pdf":
+        reader = PdfReader(uploaded_file)
+        for page in reader.pages:
+            text_data += page.extract_text()
+
+    else:
+        # Gemini can directly read images
+        image_bytes = uploaded_file.read()
+        response = model.generate_content([
+            "Extract all readable text from this image.",
+            {"mime_type": uploaded_file.type, "data": image_bytes}
+        ])
+        text_data = response.text
+
+    st.success("File processed.")
+
+
+# ---------------------------
+# MAIN CHAT
+# ---------------------------
+
+if query and text_data:
+
+    index, chunks = create_vectorstore(text_data)
+    context = retrieve(query, index, chunks)
 
     prompt = f"""
-    Answer the question using only the context below.
+    Answer strictly using the context below.
 
     Context:
     {context}
@@ -77,68 +129,23 @@ def generate_answer(query, context_chunks):
     Question:
     {query}
 
-    If answer not in context, say:
-    "Answer not found in provided data."
+    If not found, say:
+    Answer not found in provided document.
     """
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
-
-    return response["choices"][0]["message"]["content"]
-
-
-# -------- STREAMLIT UI --------
-
-st.title("🔮 Multimodal RAG Chat Assistant")
-
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-uploaded_file = st.file_uploader("Upload PDF or Image", type=["pdf", "png", "jpg", "jpeg"])
-voice_input = st.checkbox("Use Voice Input")
-
-text_data = ""
-
-# -------- FILE PROCESSING --------
-if uploaded_file:
-    if uploaded_file.type == "application/pdf":
-        reader = PdfReader(uploaded_file)
-        for page in reader.pages:
-            text_data += page.extract_text()
-
-    else:
-        image = Image.open(uploaded_file)
-        text_data = pytesseract.image_to_string(image)
-
-    st.success("File processed successfully.")
-
-# -------- VOICE INPUT --------
-if voice_input:
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        st.info("Speak now...")
-        audio = recognizer.listen(source)
-        try:
-            query = recognizer.recognize_google(audio)
-            st.write("You said:", query)
-        except:
-            query = ""
-            st.error("Could not recognize speech.")
-else:
-    query = st.chat_input("Ask your question")
-
-# -------- MAIN CHAT LOGIC --------
-if query and text_data:
-
-    index, chunks = create_vectorstore(text_data)
-    context = retrieve(query, index, chunks)
-    answer = generate_answer(query, context)
+    response = model.generate_content(prompt)
 
     st.session_state.chat_history.append(("user", query))
-    st.session_state.chat_history.append(("assistant", answer))
+    st.session_state.chat_history.append(("assistant", response.text))
+
+
+# ---------------------------
+# DISPLAY CHAT
+# ---------------------------
+
+for role, message in st.session_state.chat_history:
+    with st.chat_message(role):
+        st.write(message)
 
 # -------- CHAT DISPLAY --------
 for role, message in st.session_state.chat_history:
