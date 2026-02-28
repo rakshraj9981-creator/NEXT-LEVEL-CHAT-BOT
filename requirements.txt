@@ -1,5 +1,7 @@
 streamlit
-google-generativeai
 faiss-cpu
 numpy
+sentence-transformers
+groq
 PyPDF2
+Pillow
