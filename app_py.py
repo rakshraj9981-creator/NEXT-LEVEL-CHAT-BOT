@@ -19,7 +19,7 @@ import pytesseract
 # ---------------- CONFIG ---------------- #
 
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-MODEL_NAME = "llama3-8b-8192"
+MODEL_NAME = "llama-3.1-8b-instant"
 
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -45,7 +45,6 @@ def create_vectorstore(text):
         return None, None
 
     chunks = chunk_text(text)
-
     if not chunks:
         return None, None
 
