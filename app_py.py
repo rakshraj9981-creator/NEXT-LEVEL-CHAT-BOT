@@ -10,7 +10,6 @@ Original file is located at
 import streamlit as st
 import requests
 from PIL import Image
-import io
 
 # ---------------- CONFIG ---------------- #
 
@@ -22,7 +21,7 @@ headers = {
     "Authorization": f"Bearer {HF_API_KEY}"
 }
 
-# ---------------- HUGGING FACE CALL ---------------- #
+# ---------------- SAFE API CALL ---------------- #
 
 def query_image(image_bytes):
     response = requests.post(
@@ -30,7 +29,19 @@ def query_image(image_bytes):
         headers=headers,
         data=image_bytes
     )
-    return response.json()
+
+    # Check status first
+    if response.status_code == 503:
+        return {"error": "Model is loading. Please wait 30-60 seconds and try again."}
+
+    if response.status_code != 200:
+        return {"error": f"API Error: {response.status_code}", "details": response.text}
+
+    try:
+        return response.json()
+    except Exception:
+        return {"error": "Invalid JSON response", "details": response.text}
+
 
 # ---------------- STREAMLIT UI ---------------- #
 
@@ -42,6 +53,7 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file:
+
     image = Image.open(uploaded_file)
     st.image(image, caption="Uploaded Image", use_column_width=True)
 
@@ -50,10 +62,15 @@ if uploaded_file:
         image_bytes = uploaded_file.read()
         result = query_image(image_bytes)
 
-        if isinstance(result, list) and "generated_text" in result[0]:
-            caption = result[0]["generated_text"]
-            st.success("Image Description:")
-            st.write(caption)
+        # If error returned
+        if "error" in result:
+            st.error(result["error"])
+            if "details" in result:
+                st.write(result["details"])
         else:
-            st.error("Model loading or API error. Try again.")
-            st.write(result)
+            if isinstance(result, list) and "generated_text" in result[0]:
+                caption = result[0]["generated_text"]
+                st.success("Image Description:")
+                st.write(caption)
+            else:
+                st.write(result)
