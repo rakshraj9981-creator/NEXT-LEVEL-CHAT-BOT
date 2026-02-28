@@ -11,7 +11,6 @@ import streamlit as st
 import google.generativeai as genai
 import numpy as np
 import faiss
-import os
 from PyPDF2 import PdfReader
 
 # ---------------------------
@@ -19,14 +18,17 @@ from PyPDF2 import PdfReader
 # ---------------------------
 
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel("gemini-1.5-flash")
+
+CHAT_MODEL = "gemini-1.5-flash-latest"
+EMBED_MODEL = "embedding-001"
+
+model = genai.GenerativeModel(CHAT_MODEL)
 
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 
-
 # ---------------------------
-# CHUNKING
+# TEXT CHUNKING
 # ---------------------------
 def chunk_text(text):
     chunks = []
@@ -36,11 +38,11 @@ def chunk_text(text):
 
 
 # ---------------------------
-# EMBEDDING USING GEMINI
+# GEMINI EMBEDDING
 # ---------------------------
 def get_embedding(text):
     response = genai.embed_content(
-        model="models/embedding-001",
+        model=EMBED_MODEL,
         content=text
     )
     return response["embedding"]
@@ -52,10 +54,7 @@ def get_embedding(text):
 def create_vectorstore(text):
     chunks = chunk_text(text)
 
-    embeddings = []
-    for chunk in chunks:
-        embeddings.append(get_embedding(chunk))
-
+    embeddings = [get_embedding(chunk) for chunk in chunks]
     embeddings = np.array(embeddings).astype("float32")
 
     dimension = embeddings.shape[1]
@@ -66,7 +65,7 @@ def create_vectorstore(text):
 
 
 # ---------------------------
-# RETRIEVE
+# RETRIEVE CONTEXT
 # ---------------------------
 def retrieve(query, index, chunks, top_k=3):
     query_embedding = np.array([get_embedding(query)]).astype("float32")
@@ -100,7 +99,6 @@ if uploaded_file:
             text_data += page.extract_text()
 
     else:
-        # Gemini can directly read images
         image_bytes = uploaded_file.read()
         response = model.generate_content([
             "Extract all readable text from this image.",
@@ -108,11 +106,11 @@ if uploaded_file:
         ])
         text_data = response.text
 
-    st.success("File processed.")
+    st.success("File processed successfully.")
 
 
 # ---------------------------
-# MAIN CHAT
+# MAIN CHAT LOGIC
 # ---------------------------
 
 if query and text_data:
@@ -129,8 +127,8 @@ if query and text_data:
     Question:
     {query}
 
-    If not found, say:
-    Answer not found in provided document.
+    If answer not found, say:
+    Answer not found in the document.
     """
 
     response = model.generate_content(prompt)
@@ -143,11 +141,6 @@ if query and text_data:
 # DISPLAY CHAT
 # ---------------------------
 
-for role, message in st.session_state.chat_history:
-    with st.chat_message(role):
-        st.write(message)
-
-# -------- CHAT DISPLAY --------
 for role, message in st.session_state.chat_history:
     with st.chat_message(role):
         st.write(message)
